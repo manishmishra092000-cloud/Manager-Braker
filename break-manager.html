@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BCU Break Manager</title>
+<style>
+  :root{
+    --bg:#0f172a;
+    --card:#111827cc;
+    --accent:#6366f1;
+    --ok:#10b981;
+    --warn:#ef4444;
+    --text:#e5e7eb;
+  }
+  *{box-sizing:border-box;font-family:Segoe UI,Arial}
+  body{margin:0;background:linear-gradient(135deg,#0f172a,#020617);color:var(--text);min-height:100vh}
+  header{position:sticky;top:0;z-index:5;background:linear-gradient(90deg,#6366f1,#22c55e);padding:10px 20px;font-weight:700;display:flex;align-items:center;gap:12px}
+  header img{height:42px}
+  .container{padding:20px;max-width:1200px;margin:auto}
+  .card{background:var(--card);backdrop-filter:blur(10px);border-radius:16px;padding:18px;margin-bottom:18px;box-shadow:0 10px 25px #00000055}
+  input,select,button{padding:10px;border-radius:8px;border:none;margin:6px 0}
+  input,select{width:100%}
+  button{background:var(--accent);color:#fff;font-weight:600;cursor:pointer}
+  button.secondary{background:#334155}
+  button.danger{background:var(--warn)}
+  button.success{background:var(--ok)}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th,td{padding:10px;border-bottom:1px solid #334155;text-align:left}
+  th{background:#020617}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .row>div{flex:1}
+  .badge-ok{color:#10b981;font-weight:700}
+  .badge-warn{color:#ef4444;font-weight:700}
+  .timerBox{font-size:18px;background:#020617;padding:12px;border-radius:12px;margin:10px 0}
+  .mini-link{font-size:13px;opacity:.8;cursor:pointer;text-decoration:underline;margin-left:10px}
+  .liveItem{padding:8px;border-bottom:1px solid #334155}
+</style>
+</head>
+<body>
+<header>
+  <img src="/mnt/data/3c7ac21f-ee09-491f-957d-1a0e69454838.png" />
+  BCU: Birmingham City University — Break Manager
+</header>
+<div class="container" id="app"></div>
+
+<script>
+// ======= CONSTANTS =======
+const LUNCH_LIMIT = 45; // minutes
+const TEA_POOL = 30; // total minutes
+
+// ======= STORAGE =======
+const ADMIN_USER = "admin";
+let ADMIN_PASS = localStorage.getItem("adminPass") || "Manish@123";
+let users = JSON.parse(localStorage.getItem("users")||"[]");
+let breaks = JSON.parse(localStorage.getItem("breaks")||"[]");
+let liveBreaks = JSON.parse(localStorage.getItem("liveBreaks")||"[]");
+let session = null;
+let timerInterval=null;
+let adminLiveInterval=null;
+
+function saveAll(){
+  localStorage.setItem("users",JSON.stringify(users));
+  localStorage.setItem("breaks",JSON.stringify(breaks));
+  localStorage.setItem("liveBreaks",JSON.stringify(liveBreaks));
+  localStorage.setItem("adminPass",ADMIN_PASS);
+}
+
+// ===== ROUTER =====
+function render(){
+  clearInterval(timerInterval);
+  clearInterval(adminLiveInterval);
+  if(!session) return renderHome();
+  if(session.role==='admin') return renderAdmin();
+  if(session.role==='employee') return renderEmployee();
+}
+
+// ===== HOME =====
+function renderHome(){
+  app.innerHTML=`<div class="card"><h2>Login Portal</h2>
+  <button onclick="renderAdminLogin()">Admin Login</button>
+  <button class="secondary" onclick="renderEmployeeEntry()">Employee</button></div>`;
+}
+
+// ===== ADMIN LOGIN =====
+function renderAdminLogin(){
+  app.innerHTML=`<div class="card"><h2>Admin Login</h2>
+    <input id="auser" placeholder="Username" />
+    <input id="apass" type="password" placeholder="Password" />
+    <button onclick="adminLogin()">Login</button>
+    <button class="secondary" onclick="renderHome()">⬅ Back</button></div>`;
+}
+function adminLogin(){
+  if(auser.value===ADMIN_USER && apass.value===ADMIN_PASS){session={role:'admin'};render();}
+  else alert('Invalid admin credentials');
+}
+
+// ===== EMPLOYEE ENTRY =====
+function renderEmployeeEntry(){
+  app.innerHTML=`<div class="card"><h2>Employee</h2>
+    <button onclick="renderEmployeeLogin()">Login</button>
+    <button class="secondary" onclick="renderEmployeeCreate()">Create Account</button>
+    <button onclick="renderHome()">⬅ Back</button></div>`;
+}
+
+function renderEmployeeCreate(){
+  app.innerHTML=`<div class="card"><h2>Create Account</h2>
+    <input id="ename" placeholder="Name" />
+    <input id="epass" type="password" placeholder="Password" />
+    <button onclick="createEmp()">Submit (Admin Approval)</button>
+    <button onclick="renderEmployeeEntry()">⬅ Back</button></div>`;
+}
+function createEmp(){
+  if(!ename.value||!epass.value) return alert('Fill all fields');
+  users.push({name:ename.value,password:epass.value,approved:false,teaUsed:0});
+  saveAll();alert('Submitted for admin approval');renderEmployeeEntry();
+}
+
+function renderEmployeeLogin(){
+  app.innerHTML=`<div class="card"><h2>Employee Login</h2>
+    <input id="luser" placeholder="Name" />
+    <input id="lpass" type="password" placeholder="Password" />
+    <button onclick="empLogin()">Login</button>
+    <button onclick="renderEmployeeEntry()">⬅ Back</button></div>`;
+}
+function empLogin(){
+  const u=users.find(x=>x.name===luser.value && x.password===lpass.value);
+  if(!u) return alert('Invalid');
+  if(!u.approved) return alert('Waiting for admin approval');
+  session={role:'employee',user:u};
+  render();
+}
+
+// ===== EMPLOYEE DASH =====
+function renderEmployee(){
+  const u=session.user;
+  const remainingTea = Math.max(0, TEA_POOL - u.teaUsed);
+  const myBreak = liveBreaks.find(b=>b.name===u.name);
+
+  app.innerHTML=`<div class="card">
+    <h2>Welcome ${u.name}
+      <span class="mini-link" onclick="toggleEmpPass()">Change details</span>
+    </h2>
+
+    ${myBreak ? '<div class="timerBox" id="timerBox">Timer running...</div>' : ''}
+
+    <p><b>Tea remaining today:</b> ${remainingTea} / ${TEA_POOL} min</p>
+
+    <div class="row">
+      <div><button class="success" onclick="startBreak('Tea Break')">Start Tea Break</button></div>
+      <div><button class="secondary" onclick="startBreak('Lunch Break')">Start Lunch Break</button></div>
+      <div><button class="danger" onclick="finishBreak()">Finish Break</button></div>
+    </div>
+
+    <div id="empPassBox" style="display:none;margin-top:12px">
+      <input id="oldp" type="password" placeholder="Old password" />
+      <input id="newp" type="password" placeholder="New password" />
+      <button onclick="changeEmpPass()">Update Password</button>
+    </div>
+
+    <button onclick="logout()">Logout</button>
+  </div>`;
+
+  if(myBreak) startTimer();
+}
+
+function toggleEmpPass(){
+  const box=document.getElementById('empPassBox');
+  box.style.display = box.style.display==='none' ? 'block' : 'none';
+}
+
+function startTimer(){
+  timerInterval=setInterval(()=>{
+    const u=session?.user;
+    if(!u) return;
+
+    const br=liveBreaks.find(b=>b.name===u.name);
+    if(!br) return clearInterval(timerInterval);
+
+    const diffSec=Math.floor((Date.now()-br.start)/1000);
+    const m=Math.floor(diffSec/60);
+    const s=diffSec%60;
+
+    const el=document.getElementById('timerBox');
+    if(!el) return;
+
+    el.innerHTML=`<b>${br.type}</b><br>Running: ${m}m ${s}s`;
+  },1000);
+}
+
+function changeEmpPass(){
+  const u=session.user;
+  if(oldp.value!==u.password) return alert('Wrong old password');
+  if(!newp.value) return alert('Enter new password');
+  u.password=newp.value;saveAll();alert('Updated');
+}
+
+function startBreak(type){
+  const u=session.user;
+  if(liveBreaks.find(b=>b.name===u.name)) return alert('Already on break');
+  liveBreaks.push({name:u.name,type,start:Date.now()});
+  saveAll();
+  renderEmployee();
+}
+
+function finishBreak(){
+  const u=session.user;
+  const idx=liveBreaks.findIndex(b=>b.name===u.name);
+  if(idx===-1) return alert('No active break');
+
+  const br=liveBreaks[idx];
+  const mins=Math.floor((Date.now()-br.start)/60000);
+  if(br.type==='Tea Break') u.teaUsed+=mins;
+
+  breaks.push({name:u.name,type:br.type,minutes:mins,time:new Date().toLocaleString(),totalTea:u.teaUsed});
+  liveBreaks.splice(idx,1);
+  saveAll();
+  renderEmployee();
+}
+
+// ===== ADMIN =====
+function renderAdmin(){
+  const pending=users.filter(u=>!u.approved);
+  const options=['All Employees',...users.map(u=>u.name)].map(n=>`<option>${n}</option>`).join('');
+
+  app.innerHTML=`<div class="card">
+    <h2>Admin Dashboard</h2>
+
+    <div class="card">
+      <h3>🔴 Live Break Monitor</h3>
+      <button class="secondary" onclick="renderAdmin()">🔄 Refresh</button>
+      <div id="liveBox">Checking...</div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label><b>Filter Employee</b></label>
+        <select id="filter" onchange="renderAdmin()">${options}</select>
+      </div>
+      <div>
+        <label><b>Change Admin Password</b></label>
+        <input id="newAdminPass" placeholder="New password" />
+        <button onclick="changeAdminPass()">Update</button>
+      </div>
+    </div>
+
+    <h3>Pending Approvals (${pending.length})</h3>
+    ${pending.map(u=>`<button onclick="approve('${u.name}')">Approve ${u.name}</button>`).join('')||'<p>None</p>'}
+
+    <h3>Manage Employees</h3>
+    ${users.map(u=>`<div>${u.name} <button class='danger' onclick="deleteUser('${u.name}')">Delete</button></div>`).join('')||'<p>No users</p>'}
+
+    <h3>Break Analytics</h3>
+    ${renderTable()}
+
+    <button onclick="logout()">Logout</button>
+  </div>`;
+
+  startAdminLive();
+
+  if(!document.getElementById('filter').value)
+    document.getElementById('filter').value='All Employees';
+}
+
+function startAdminLive(){
+  adminLiveInterval=setInterval(()=>{
+    const box=document.getElementById('liveBox');
+    if(!box) return;
+
+    if(liveBreaks.length===0){
+      box.innerHTML='<span class="badge-ok">No one on break</span>';
+      return;
+    }
+
+    box.innerHTML = liveBreaks.map(b=>{
+      const diffSec=Math.floor((Date.now()-b.start)/1000);
+      const m=Math.floor(diffSec/60);
+      const s=diffSec%60;
+      return `<div class="liveItem"><b>${b.name}</b> — ${b.type}<br>Running: ${m}m ${s}s</div>`;
+    }).join('');
+  },1000);
+}
+
+function deleteUser(name){
+  if(!confirm('Delete '+name+'?')) return;
+  users=users.filter(u=>u.name!==name);
+  breaks=breaks.filter(b=>b.name!==name);
+  liveBreaks=liveBreaks.filter(b=>b.name!==name);
+  saveAll();renderAdmin();
+}
+
+function changeAdminPass(){
+  if(!newAdminPass.value) return alert('Enter password');
+  ADMIN_PASS=newAdminPass.value;saveAll();alert('Admin password updated');
+}
+function approve(name){const u=users.find(x=>x.name===name);u.approved=true;saveAll();renderAdmin();}
+
+function renderTable(){
+  const f=document.getElementById('filter')?.value||'All Employees';
+  const data = f==='All Employees'?breaks:breaks.filter(b=>b.name===f);
+  return `<table>
+    <tr><th>Employee</th><th>Break</th><th>Minutes</th><th>Time</th><th>Total Tea</th><th>Status</th></tr>
+    ${data.map(b=>{
+      const status=b.totalTea>TEA_POOL?'<span class="badge-warn">Extra</span>':'<span class="badge-ok">OK</span>';
+      return `<tr><td>${b.name}</td><td>${b.type}</td><td>${b.minutes}</td><td>${b.time}</td><td>${b.totalTea}</td><td>${status}</td></tr>`;
+    }).join('')||'<tr><td colspan=6>No data</td></tr>'}
+  </table>`;
+}
+
+function logout(){session=null;render();}
+render();
+
+// ===== BASIC TESTS =====
+console.assert(Array.isArray(users), 'Users should be array');
+console.assert(Array.isArray(breaks), 'Breaks should be array');
+console.assert(Array.isArray(liveBreaks), 'LiveBreaks should be array');
+</script>
+</body>
+</html>
